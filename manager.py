@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import psutil
 from datetime import datetime
 import threading
@@ -49,6 +49,11 @@ class ProcessManager:
         ttk.Button(self.button_frame, text="Refresh", command=self.refresh_processes).grid(row=0, column=0, padx=5)
         ttk.Button(self.button_frame, text="End Process", command=self.end_process).grid(row=0, column=1, padx=5)
         
+        # Process tracking
+        self.process_cache = {}
+        self.selected_pid = None
+        self.tree.bind('<<TreeviewSelect>>', self.on_select)
+        
         # Start update thread
         self.running = True
         self.update_thread = threading.Thread(target=self.auto_update)
@@ -61,35 +66,105 @@ class ProcessManager:
         self.main_frame.columnconfigure(0, weight=1)
         self.main_frame.rowconfigure(1, weight=1)
         
-    def get_processes(self):
-        processes = []
-        for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent', 'status']):
-            try:
-                processes.append(proc.info)
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                pass
-        return processes
+        # Track the first visible item for scroll position
+        self.first_visible = None
+        self.tree.bind('<<TreeviewOpen>>', self.update_first_visible)
+        self.tree.bind('<Motion>', self.update_first_visible)
     
-    def refresh_processes(self):
-        # Clear existing items
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        
-        # Get and insert new processes
-        processes = self.get_processes()
+    def update_first_visible(self, event=None):
+        """Track the first visible item to maintain scroll position"""
+        region = self.tree.bbox(self.tree.get_children()[0])
+        if region:
+            self.first_visible = self.tree.identify_row(region[1])
+
+    def on_select(self, event):
+        """Store the currently selected PID"""
+        selection = self.tree.selection()
+        if selection:
+            self.selected_pid = self.tree.item(selection[0])['values'][0]
+    
+    def get_processes(self):
+        processes = {}
         search_term = self.search_var.get().lower()
         
-        for proc in processes:
-            if search_term in str(proc['pid']).lower() or search_term in proc['name'].lower():
+        for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent', 'status']):
+            try:
+                info = proc.info
+                pid = info['pid']
+                name = info['name']
+                
+                if search_term and search_term not in str(pid).lower() and search_term not in name.lower():
+                    continue
+                    
+                processes[pid] = {
+                    'pid': pid,
+                    'name': name,
+                    'cpu_percent': info['cpu_percent'],
+                    'memory_percent': info['memory_percent'],
+                    'status': info['status']
+                }
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        
+        return processes
+    
+    def update_tree_item(self, item_id, process_info):
+        """Update a single tree item with new process information"""
+        current_values = self.tree.item(item_id)['values']
+        new_values = (
+            process_info['pid'],
+            process_info['name'],
+            f"{process_info['cpu_percent']:.1f}",
+            f"{process_info['memory_percent']:.1f}" if process_info['memory_percent'] is not None else "N/A",
+            process_info['status']
+        )
+        
+        # Only update if values have changed
+        if current_values != new_values:
+            self.tree.item(item_id, values=new_values)
+    
+    def refresh_processes(self):
+        new_processes = self.get_processes()
+        existing_items = {self.tree.item(item_id)['values'][0]: item_id 
+                         for item_id in self.tree.get_children()}
+        
+        # Update existing items and track which ones are still present
+        updated_pids = set()
+        for pid, process_info in new_processes.items():
+            if pid in existing_items:
+                self.update_tree_item(existing_items[pid], process_info)
+                updated_pids.add(pid)
+            else:
+                # Add new process
                 self.tree.insert('', tk.END, values=(
-                    proc['pid'],
-                    proc['name'],
-                    f"{proc['cpu_percent']:.1f}",
-                    f"{proc['memory_percent']:.1f}" if proc['memory_percent'] is not None else "N/A",
-                    proc['status']
+                    process_info['pid'],
+                    process_info['name'],
+                    f"{process_info['cpu_percent']:.1f}",
+                    f"{process_info['memory_percent']:.1f}" if process_info['memory_percent'] is not None else "N/A",
+                    process_info['status']
                 ))
+        
+        # Remove items that no longer exist
+        for pid, item_id in existing_items.items():
+            if pid not in updated_pids:
+                self.tree.delete(item_id)
+        
+        # Restore selection if possible
+        if self.selected_pid:
+            for item_id in self.tree.get_children():
+                if self.tree.item(item_id)['values'][0] == self.selected_pid:
+                    self.tree.selection_set(item_id)
+                    break
+        
+        # Restore scroll position
+        if self.first_visible:
+            try:
+                self.tree.see(self.first_visible)
+            except:
+                pass
     
     def filter_processes(self, event=None):
+        # Store current selection and scroll position
         self.refresh_processes()
     
     def end_process(self):
@@ -100,16 +175,20 @@ class ProcessManager:
         pid = int(self.tree.item(selected_item)['values'][0])
         try:
             psutil.Process(pid).terminate()
+            self.selected_pid = None  # Clear selection after termination
             self.refresh_processes()
         except psutil.NoSuchProcess:
             pass
         except psutil.AccessDenied:
-            tk.messagebox.showerror("Error", "Access denied. Cannot terminate this process.")
+            messagebox.showerror("Error", "Access denied. Cannot terminate this process.")
     
     def auto_update(self):
         while self.running:
-            self.refresh_processes()
-            time.sleep(2)
+            try:
+                self.root.after(0, self.refresh_processes)
+                time.sleep(2)
+            except tk.TclError:
+                break  # Exit if window is closed
     
     def on_closing(self):
         self.running = False
