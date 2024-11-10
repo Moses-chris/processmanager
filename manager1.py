@@ -66,6 +66,108 @@ class ThemeManager:
         
         return theme
 
+class ProcessDetailsDialog:
+    def __init__(self, parent, process_info):
+        self.window = tk.Toplevel(parent)
+        self.window.title(f"Process Details - {process_info['name']}")
+        self.window.geometry("500x600")
+        
+        # Wait for window to be visible
+        self.window.wait_visibility()
+        
+        # Apply window manager hints
+        self.window.attributes('-type', 'dialog')  # For X11 window managers
+        self.window.focus_set()
+        
+        print("Debug - Creating ProcessDetailsDialog")
+        
+        # Create main container with padding
+        self.main_frame = ttk.Frame(self.window, padding="10")
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.process_info = process_info
+        self.create_widgets()
+    
+    def create_widgets(self):
+        print("Debug - Creating widgets")
+        
+        # Create content frame
+        content_frame = ttk.Frame(self.main_frame)
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Create canvas and scrollbar
+        canvas = tk.Canvas(content_frame)
+        scrollbar = ttk.Scrollbar(content_frame, orient="vertical", command=canvas.yview)
+        
+        # Create frame for scrollable content
+        self.scrollable_frame = ttk.Frame(canvas)
+        
+        # Configure scrolling
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        # Create window inside canvas
+        canvas_frame = canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        
+        # Configure canvas to expand with window
+        canvas.bind('<Configure>', lambda e: canvas.itemconfig(canvas_frame, width=e.width))
+        
+        # Pack canvas and scrollbar
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Add process details with better formatting
+        details = [
+            ("Process Name", self.process_info['name']),
+            ("PID", str(self.process_info['pid'])),
+            ("Status", self.process_info['status']),
+            ("CPU Usage", f"{self.process_info['cpu_percent']:.1f}%"),
+            ("Memory Usage", f"{self.process_info['memory_percent']:.1f}%"),
+            ("User", self.process_info['username']),
+            ("Priority", str(self.process_info['priority'])),
+            ("Threads", str(self.process_info['num_threads'])),
+            ("Start Time", self.process_info['start_time']),
+            ("Path", self.process_info['path']),
+            ("Command Line", self.process_info['cmdline'])
+        ]
+        
+        # Create labels for each detail with improved styling
+        for i, (label, value) in enumerate(details):
+            # Container frame for each detail row
+            row_frame = ttk.Frame(self.scrollable_frame)
+            row_frame.pack(fill=tk.X, padx=5, pady=3)
+            
+            # Label with bold font
+            label_widget = ttk.Label(row_frame, 
+                                   text=f"{label}:", 
+                                   width=15, 
+                                   style='Bold.TLabel')
+            label_widget.pack(side=tk.LEFT)
+            
+            # Value with word wrap
+            value_widget = ttk.Label(row_frame, 
+                                   text=str(value),
+                                   wraplength=350)
+            value_widget.pack(side=tk.LEFT, padx=(5, 0), fill=tk.X, expand=True)
+        
+        # Add close button
+        button_frame = ttk.Frame(self.window)
+        button_frame.pack(fill=tk.X, padx=10, pady=5)
+        close_button = ttk.Button(button_frame, 
+                                text="Close", 
+                                command=self.window.destroy)
+        close_button.pack(side=tk.RIGHT)
+        
+        # Bind mousewheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        
+        print("Debug - Dialog creation complete")
 class ColumnCustomizer:
     DEFAULT_COLUMNS = {
         'PID': True,
@@ -215,6 +317,57 @@ class ProcessManager:
         self.tree.bind('<Button-3>', self.show_context_menu)
         self.tree.bind('<Double-1>', lambda e: self.show_details())
     
+    def show_details(self):
+        """Show detailed information about the selected process"""
+        selected_item = self.tree.selection()
+        if not selected_item:
+            return
+        
+        try:
+            values = self.tree.item(selected_item[0])['values']
+            pid = int(values[0])  # PID should be the first column
+            
+            # Get process info directly here
+            process = psutil.Process(pid)
+            
+            # Add small delay to ensure CPU percent is calculated
+            process.cpu_percent()
+            time.sleep(0.1)  # Small delay for CPU measurement
+            
+            try:
+                path = process.exe()
+            except (psutil.AccessDenied, psutil.ZombieProcess):
+                path = "Access Denied"
+            
+            try:
+                cmdline = ' '.join(process.cmdline())
+            except (psutil.AccessDenied, psutil.ZombieProcess):
+                cmdline = "Access Denied"
+            
+            process_info = {
+                'pid': pid,
+                'name': process.name(),
+                'cpu_percent': process.cpu_percent(),
+                'memory_percent': process.memory_percent(),
+                'status': process.status(),
+                'num_threads': process.num_threads(),
+                'username': process.username(),
+                'priority': process.nice(),
+                'path': path,
+                'cmdline': cmdline,
+                'start_time': datetime.fromtimestamp(process.create_time()).strftime('%Y-%m-%d %H:%M:%S')
+            }
+            
+            print("Debug - Process Info:", process_info)
+            
+            # Create dialog in the main thread
+            self.root.after(0, lambda: ProcessDetailsDialog(self.root, process_info))
+            
+        except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+            messagebox.showerror("Error", f"Cannot access process details: {str(e)}")
+        except Exception as e:
+            messagebox.showerror("Error", f"An error occurred: {str(e)}")
+
     def create_status_bar(self):
         self.status_bar = ttk.Label(self.main_frame, text="Ready", anchor=tk.W)
         self.status_bar.pack(fill=tk.X, padx=5, pady=2)
@@ -350,7 +503,8 @@ class ProcessManager:
             'dark_theme': self.is_dark_theme
         }
         with open('process_manager_settings.json', 'w') as f:
-            json.dumps(settings, f)
+            json.dump(settings, f)  # Changed from json.dumps to json.dump
+
     
     def toggle_theme(self):
         self.is_dark_theme = not self.is_dark_theme
@@ -439,7 +593,9 @@ class ProcessManager:
                 if column == 'PID':
                     values.append(process['pid'])
                 elif column == 'Name':
-                    values.append(process['name'])
+                    # Add CPU and Memory usage to the name
+                    name_with_usage = f"{process['name']}"
+                    values.append(name_with_usage)
                 elif column == 'CPU %':
                     values.append(f"{process['cpu_percent']:.1f}")
                 elif column == 'Memory %':
@@ -465,12 +621,11 @@ class ProcessManager:
             if process['pid'] in selected_pids:
                 self.tree.selection_add(item)
         
-        # Update status bar
         total_processes = len(processes)
         cpu_usage = psutil.cpu_percent()
         memory_usage = psutil.virtual_memory().percent
         self.status_bar.config(text=f"Processes: {total_processes} | CPU Usage: {cpu_usage:.1f}% | Memory Usage: {memory_usage:.1f}%")
-
+        
     def end_process(self, event=None):
         """End selected process(es)"""
         selected_items = self.tree.selection()
@@ -555,7 +710,7 @@ class ProcessManager:
         if messagebox.askokcancel("Quit", "Do you want to quit Process Manager?"):
             self.running = False
             self.save_settings()
-            if self.icon:
+            if hasattr(self, 'icon') and self.icon is not None:
                 self.icon.stop()
             self.root.destroy()
 
