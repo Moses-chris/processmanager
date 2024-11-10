@@ -66,108 +66,240 @@ class ThemeManager:
         
         return theme
 
-class ProcessDetailsDialog:
+class ProcessDetailsWindow:
     def __init__(self, parent, process_info):
         self.window = tk.Toplevel(parent)
-        self.window.title(f"Process Details - {process_info['name']}")
-        self.window.geometry("500x600")
+        self.window.title(f"Process Details - {process_info['name']} (PID: {process_info['pid']})")
+        self.window.geometry("500x700")
         
-        # Wait for window to be visible
-        self.window.wait_visibility()
+        # Create notebook for tabbed interface
+        self.notebook = ttk.Notebook(self.window)
+        self.notebook.pack(expand=True, fill='both', padx=5, pady=5)
         
-        # Apply window manager hints
-        self.window.attributes('-type', 'dialog')  # For X11 window managers
-        self.window.focus_set()
+        # Basic Info Tab
+        self.basic_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.basic_frame, text='Basic Info')
         
-        print("Debug - Creating ProcessDetailsDialog")
+        # Details Tab
+        self.details_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.details_frame, text='Details')
         
-        # Create main container with padding
-        self.main_frame = ttk.Frame(self.window, padding="10")
-        self.main_frame.pack(fill=tk.BOTH, expand=True)
+        # Files & Connections Tab
+        self.files_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.files_frame, text='Files & Connections')
         
-        self.process_info = process_info
-        self.create_widgets()
+        # Environment Tab
+        self.env_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.env_frame, text='Environment')
+        
+        # Performance Tab
+        self.perf_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.perf_frame, text='Performance')
+        
+        self.process = psutil.Process(process_info['pid'])
+        
+        # Add control buttons at the top
+        self.create_control_buttons()
+        
+        # Start update timer
+        self.running = True
+        self.update_thread = threading.Thread(target=self.auto_update)
+        self.update_thread.daemon = True
+        self.update_thread.start()
+        
+        # Bind window close event
+        self.window.protocol("WM_DELETE_WINDOW", self.on_closing)
+        
+        self.populate_info()
     
-    def create_widgets(self):
-        print("Debug - Creating widgets")
+    def create_control_buttons(self):
+        """Create process control buttons"""
+        control_frame = ttk.LabelFrame(self.window, text="Process Control", padding="5")
+        control_frame.pack(fill='x', padx=5, pady=5)
         
-        # Create content frame
-        content_frame = ttk.Frame(self.main_frame)
-        content_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Create canvas and scrollbar
-        canvas = tk.Canvas(content_frame)
-        scrollbar = ttk.Scrollbar(content_frame, orient="vertical", command=canvas.yview)
-        
-        # Create frame for scrollable content
-        self.scrollable_frame = ttk.Frame(canvas)
-        
-        # Configure scrolling
-        self.scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        
-        # Create window inside canvas
-        canvas_frame = canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
-        
-        # Configure canvas to expand with window
-        canvas.bind('<Configure>', lambda e: canvas.itemconfig(canvas_frame, width=e.width))
-        
-        # Pack canvas and scrollbar
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        # Add process details with better formatting
-        details = [
-            ("Process Name", self.process_info['name']),
-            ("PID", str(self.process_info['pid'])),
-            ("Status", self.process_info['status']),
-            ("CPU Usage", f"{self.process_info['cpu_percent']:.1f}%"),
-            ("Memory Usage", f"{self.process_info['memory_percent']:.1f}%"),
-            ("User", self.process_info['username']),
-            ("Priority", str(self.process_info['priority'])),
-            ("Threads", str(self.process_info['num_threads'])),
-            ("Start Time", self.process_info['start_time']),
-            ("Path", self.process_info['path']),
-            ("Command Line", self.process_info['cmdline'])
+        # Create buttons grid
+        buttons = [
+            ("Suspend", self.suspend_process),
+            ("Resume", self.resume_process),
+            ("Stop", self.stop_process),
+            ("Kill", self.kill_process),
+            ("Debug", self.debug_process)
         ]
         
-        # Create labels for each detail with improved styling
-        for i, (label, value) in enumerate(details):
-            # Container frame for each detail row
-            row_frame = ttk.Frame(self.scrollable_frame)
-            row_frame.pack(fill=tk.X, padx=5, pady=3)
+        # Priority control
+        priority_frame = ttk.LabelFrame(control_frame, text="Priority Control")
+        priority_frame.pack(fill='x', padx=5, pady=5)
+        
+        priorities = [
+            ("Real Time", -20),
+            ("High", -10),
+            ("Above Normal", -5),
+            ("Normal", 0),
+            ("Below Normal", 5),
+            ("Low", 10)
+        ]
+        
+        for i, (label, nice) in enumerate(priorities):
+            ttk.Button(
+                priority_frame, 
+                text=label,
+                command=lambda n=nice: self.set_priority(n)
+            ).pack(side='left', padx=2)
+        
+        # Process control buttons
+        button_frame = ttk.Frame(control_frame)
+        button_frame.pack(fill='x', padx=5, pady=5)
+        
+        for text, command in buttons:
+            ttk.Button(
+                button_frame,
+                text=text,
+                command=command
+            ).pack(side='left', padx=2)
+    
+    def populate_info(self):
+        try:
+            # Calculate uptime
+            uptime = datetime.now() - datetime.fromtimestamp(self.process.create_time())
+            uptime_str = str(uptime).split('.')[0]  # Remove microseconds
             
-            # Label with bold font
-            label_widget = ttk.Label(row_frame, 
-                                   text=f"{label}:", 
-                                   width=15, 
-                                   style='Bold.TLabel')
-            label_widget.pack(side=tk.LEFT)
+            # Basic Info Tab
+            basic_info = [
+                ("Name", self.process.name()),
+                ("PID", self.process.pid),
+                ("Status", self.process.status()),
+                ("Created", datetime.fromtimestamp(self.process.create_time()).strftime('%Y-%m-%d %H:%M:%S')),
+                ("Uptime", uptime_str),
+                ("CPU %", f"{self.process.cpu_percent()}%"),
+                ("Memory %", f"{self.process.memory_percent():.1f}%"),
+                ("Memory Usage", f"{self.process.memory_info().rss / (1024*1024):.1f} MB"),
+                ("Nice", self.process.nice()),
+                ("Threads", self.process.num_threads()),
+                ("Priority", self.get_priority_string(self.process.nice())),
+                ("CPU Affinity", len(self.process.cpu_affinity())),
+            ]
             
-            # Value with word wrap
-            value_widget = ttk.Label(row_frame, 
-                                   text=str(value),
-                                   wraplength=350)
-            value_widget.pack(side=tk.LEFT, padx=(5, 0), fill=tk.X, expand=True)
-        
-        # Add close button
-        button_frame = ttk.Frame(self.window)
-        button_frame.pack(fill=tk.X, padx=10, pady=5)
-        close_button = ttk.Button(button_frame, 
-                                text="Close", 
-                                command=self.window.destroy)
-        close_button.pack(side=tk.RIGHT)
-        
-        # Bind mousewheel scrolling
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
-        
-        print("Debug - Dialog creation complete")
+            # Clear previous widgets
+            for widget in self.basic_frame.winfo_children():
+                widget.destroy()
+            
+            for i, (label, value) in enumerate(basic_info):
+                ttk.Label(self.basic_frame, text=f"{label}:", style='Bold.TLabel').grid(
+                    row=i, column=0, padx=5, pady=2, sticky='e')
+                ttk.Label(self.basic_frame, text=str(value)).grid(
+                    row=i, column=1, padx=5, pady=2, sticky='w')
+            
+            # Performance Tab
+            for widget in self.perf_frame.winfo_children():
+                widget.destroy()
+            
+            # CPU and Memory usage over time
+            cpu_usage = f"CPU Usage History:\n{'=' * int(self.process.cpu_percent())} {self.process.cpu_percent():.1f}%"
+            mem_usage = f"Memory Usage History:\n{'=' * int(self.process.memory_percent())} {self.process.memory_percent():.1f}%"
+            
+            ttk.Label(self.perf_frame, text=cpu_usage).pack(pady=10)
+            ttk.Label(self.perf_frame, text=mem_usage).pack(pady=10)
+            
+            # IO Counters
+            try:
+                io = self.process.io_counters()
+                io_info = (
+                    f"I/O Statistics:\n"
+                    f"Read Bytes: {io.read_bytes / (1024*1024):.1f} MB\n"
+                    f"Write Bytes: {io.write_bytes / (1024*1024):.1f} MB\n"
+                    f"Read Count: {io.read_count}\n"
+                    f"Write Count: {io.write_count}"
+                )
+                ttk.Label(self.perf_frame, text=io_info).pack(pady=10)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+            
+        except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+            messagebox.showerror("Error", f"Cannot access process information: {str(e)}")
+            self.window.destroy()
+    
+    def get_priority_string(self, nice):
+        """Convert nice value to priority string"""
+        if nice <= -20:
+            return "Real Time"
+        elif nice <= -10:
+            return "High"
+        elif nice <= -5:
+            return "Above Normal"
+        elif nice <= 0:
+            return "Normal"
+        elif nice <= 5:
+            return "Below Normal"
+        else:
+            return "Low"
+    
+    def set_priority(self, nice):
+        """Set process priority"""
+        try:
+            self.process.nice(nice)
+            self.populate_info()
+        except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+            messagebox.showerror("Error", f"Cannot change process priority: {str(e)}")
+    
+    def suspend_process(self):
+        """Suspend the process"""
+        try:
+            self.process.suspend()
+            self.populate_info()
+        except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+            messagebox.showerror("Error", f"Cannot suspend process: {str(e)}")
+    
+    def resume_process(self):
+        """Resume the process"""
+        try:
+            self.process.resume()
+            self.populate_info()
+        except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+            messagebox.showerror("Error", f"Cannot resume process: {str(e)}")
+    
+    def stop_process(self):
+        """Stop the process gracefully"""
+        if messagebox.askyesno("Confirm", "Are you sure you want to stop this process?"):
+            try:
+                self.process.terminate()
+                self.window.destroy()
+            except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+                messagebox.showerror("Error", f"Cannot stop process: {str(e)}")
+    
+    def kill_process(self):
+        """Force kill the process"""
+        if messagebox.askyesno("Confirm", "Are you sure you want to forcefully kill this process?"):
+            try:
+                self.process.kill()
+                self.window.destroy()
+            except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+                messagebox.showerror("Error", f"Cannot kill process: {str(e)}")
+    
+    def debug_process(self):
+        """Attach debugger to the process"""
+        try:
+            if os.name == 'nt':  # Windows
+                subprocess.Popen(['vsjitdebugger', '-p', str(self.process.pid)])
+            else:  # Linux
+                subprocess.Popen(['gdb', '-p', str(self.process.pid)])
+        except FileNotFoundError:
+            messagebox.showerror("Error", "Debugger not found. Please install appropriate debugging tools.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Cannot attach debugger: {str(e)}")
+    
+    def auto_update(self):
+        """Automatically update process information"""
+        while self.running:
+            try:
+                self.window.after(0, self.populate_info)
+                time.sleep(2)
+            except tk.TclError:
+                break
+    
+    def on_closing(self):
+        """Clean up when window is closed"""
+        self.running = False
+        self.window.destroy()
 class ColumnCustomizer:
     DEFAULT_COLUMNS = {
         'PID': True,
@@ -233,6 +365,18 @@ class ProcessManager:
         self.update_thread = threading.Thread(target=self.auto_update)
         self.update_thread.daemon = True
         self.update_thread.start()
+
+        # Add right-click context menu
+        self.context_menu = tk.Menu(root, tearoff=0)
+        self.context_menu.add_command(label="End Process", command=self.end_process)
+        self.context_menu.add_command(label="End Process Tree", command=self.end_process_tree)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="Show Details", command=self.show_details)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="New Process", command=self.create_process)
+        
+        # Bind right-click event
+        self.tree.bind('<Button-3>', self.show_context_menu)
     
     def setup_ui(self):
         # Menu Bar
@@ -242,6 +386,16 @@ class ProcessManager:
         self.main_frame = ttk.Frame(self.root)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
         
+        # Create button frame
+        self.button_frame = ttk.Frame(self.main_frame)
+        self.button_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Add buttons to button frame
+        ttk.Button(self.button_frame, text="New Process", 
+            command=self.create_process).pack(side=tk.LEFT, padx=5)
+        ttk.Button(self.button_frame, text="End Tree", 
+            command=self.end_process_tree).pack(side=tk.LEFT, padx=5)
+        
         # Toolbar
         self.create_toolbar()
         
@@ -250,7 +404,179 @@ class ProcessManager:
         
         # Status Bar
         self.create_status_bar()
-    
+
+    def load_settings(self):
+        try:
+            with open('process_manager_settings.json', 'r') as f:
+                settings = json.load(f)
+            self.visible_columns = settings.get('columns', ColumnCustomizer.DEFAULT_COLUMNS)
+            self.is_dark_theme = settings.get('dark_theme', False)
+            self.current_group_by = settings.get('group_by', None)
+        except:
+            self.visible_columns = dict(ColumnCustomizer.DEFAULT_COLUMNS)
+            self.is_dark_theme = False
+            self.current_group_by = None
+
+    def save_settings(self):
+        settings = {
+            'columns': self.visible_columns,
+            'dark_theme': self.is_dark_theme,
+            'group_by': self.current_group_by
+        }
+        with open('process_manager_settings.json', 'w') as f:
+            json.dump(settings, f)
+
+    def get_application_type(self, proc):
+        """Enhanced application type detection"""
+        try:
+            name = proc['name'].lower()
+            cmdline = proc['cmdline'].lower()
+            path = proc['path'].lower()
+
+            # Common application categories
+            browsers = ['chrome.exe', 'firefox.exe', 'msedge.exe', 'opera.exe', 'safari.exe']
+            dev_tools = ['code.exe', 'idea64.exe', 'pycharm64.exe', 'sublime_text.exe', 'notepad++.exe']
+            media_players = ['vlc.exe', 'wmplayer.exe', 'spotify.exe', 'musicbee.exe']
+            office_apps = ['winword.exe', 'excel.exe', 'powerpnt.exe', 'outlook.exe']
+            system_processes = ['svchost.exe', 'csrss.exe', 'lsass.exe', 'winlogon.exe', 'services.exe']
+            
+            # Categorize based on name and path
+            if any(browser in name for browser in browsers):
+                return 'Web Browsers'
+            elif any(dev_tool in name for dev_tool in dev_tools):
+                return 'Development Tools'
+            elif any(media_player in name for media_player in media_players):
+                return 'Media Players'
+            elif any(office_app in name for office_app in office_apps):
+                return 'Office Applications'
+            elif any(sys_proc in name for sys_proc in system_processes):
+                return 'System Processes'
+            elif 'program files' in path:
+                return 'Installed Applications'
+            elif 'windows' in path:
+                return 'Windows Components'
+            elif name.endswith('.exe'):
+                return 'Other Applications'
+            elif 'python' in name or name.endswith('.py'):
+                return 'Python Processes'
+            else:
+                return 'Background Processes'
+        except:
+            return 'Unknown'
+
+    def group_processes(self, group_by):
+        """Group processes with persistence"""
+        self.current_group_by = group_by
+        self.save_settings()
+        self.refresh_processes()
+
+    def refresh_processes(self):
+        """Update the process list view maintaining grouping"""
+        if not self.current_group_by:
+            # Normal non-grouped view
+            self._refresh_normal()
+        else:
+            self._refresh_grouped()
+
+    def _refresh_grouped(self):
+        """Refresh processes in grouped view"""
+        processes = self.get_processes()
+        groups = defaultdict(list)
+        
+        # Clear existing items
+        self.tree.delete(*self.tree.get_children())
+        
+        # Group processes
+        for proc in processes:
+            if self.current_group_by == 'type':
+                key = self.get_application_type(proc)
+            elif self.current_group_by == 'user':
+                key = proc.get('username', 'Unknown')
+            elif self.current_group_by == 'priority':
+                key = self.get_priority_group(proc)
+            elif self.current_group_by == 'resource':
+                key = self.get_resource_group(proc)
+            else:
+                key = 'Unknown'
+            
+            groups[key].append(proc)
+        
+        # Insert grouped processes
+        for group_name, group_processes in sorted(groups.items()):
+            # Create group header with summary information
+            process_count = len(group_processes)
+            total_cpu = sum(p['cpu_percent'] for p in group_processes)
+            total_memory = sum(p['memory_percent'] for p in group_processes)
+            
+            group_values = [
+                '',  # PID
+                f"{group_name} ({process_count} processes)",  # Name
+                f"{total_cpu:.1f}",  # CPU %
+                f"{total_memory:.1f}",  # Memory %
+                '',  # Status
+                '',  # Threads
+            ]
+            
+            # Add empty values for any additional columns
+            group_values.extend([''] * (len(self.visible_columns) - len(group_values)))
+            
+            # Insert group header
+            group_id = self.tree.insert('', 'end', values=group_values, tags=('group',))
+            
+            # Sort processes within group by CPU usage
+            sorted_processes = sorted(group_processes, 
+                                   key=lambda x: x['cpu_percent'], 
+                                   reverse=True)
+            
+            # Insert processes in the group
+            for proc in sorted_processes:
+                self.insert_process(proc, parent=group_id)
+
+    def _refresh_normal(self):
+        """Refresh processes in normal view"""
+        # Store selected items
+        selected_items = self.tree.selection()
+        selected_pids = [self.tree.item(item)['values'][0] for item in selected_items]
+        
+        # Clear tree
+        self.tree.delete(*self.tree.get_children())
+        
+        # Get updated process list
+        processes = self.get_processes()
+        
+        # Update tree
+        for process in processes:
+            values = []
+            for column in self.visible_columns:
+                if column == 'PID':
+                    values.append(process['pid'])
+                elif column == 'Name':
+                    values.append(process['name'])
+                elif column == 'CPU %':
+                    values.append(f"{process['cpu_percent']:.1f}")
+                elif column == 'Memory %':
+                    values.append(f"{process['memory_percent']:.1f}")
+                elif column == 'Status':
+                    values.append(process['status'])
+                elif column == 'Threads':
+                    values.append(process['num_threads'])
+                elif column == 'User':
+                    values.append(process['username'])
+                elif column == 'Priority':
+                    values.append(process['priority'])
+                elif column == 'Path':
+                    values.append(process['path'])
+                elif column == 'Command Line':
+                    values.append(process['cmdline'])
+                elif column == 'Start Time':
+                    values.append(process['start_time'])
+            
+            item = self.tree.insert('', 'end', values=values)
+            
+            # Restore selection if this was a selected process
+            if process['pid'] in selected_pids:
+                self.tree.selection_add(item)
+
     def create_menu_bar(self):
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
@@ -316,57 +642,130 @@ class ProcessManager:
         # Bind events
         self.tree.bind('<Button-3>', self.show_context_menu)
         self.tree.bind('<Double-1>', lambda e: self.show_details())
-    
+
+    def show_context_menu(self, event):
+        """Show context menu on right-click"""
+        item = self.tree.identify_row(event.y)
+        if item:
+            self.tree.selection_set(item)
+            self.context_menu.post(event.x_root, event.y_root)
+
     def show_details(self):
-        """Show detailed information about the selected process"""
+        """Show detailed process information window"""
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showinfo("Select Process", "Please select a process to view details.")
+            return
+        
+        selected_item = selected_items[0]
+        values = self.tree.item(selected_item)['values']
+        
+        try:
+            # Verify process still exists and we have access
+            process = psutil.Process(values[0])
+            process.status()  # Quick check for process accessibility
+            
+            # Create style for bold labels if it doesn't exist
+            style = ttk.Style()
+            if 'Bold.TLabel' not in style.theme_names():
+                style.configure('Bold.TLabel', font=('TkDefaultFont', 9, 'bold'))
+            
+            # Create process details window
+            process_info = {
+                'pid': values[0],
+                'name': values[1],
+                'status': values[4] if len(values) > 4 else 'Unknown',
+            }
+            
+            # Check if a details window already exists for this process
+            for window in self.root.winfo_children():
+                if isinstance(window, tk.Toplevel):
+                    try:
+                        if window.process_info['pid'] == process_info['pid']:
+                            window.lift()  # Bring existing window to front
+                            window.focus_force()
+                            return
+                    except (AttributeError, KeyError):
+                        continue
+            
+            # Create new details window
+            details_window = ProcessDetailsWindow(self.root, process_info)
+            
+            # Position the window relative to the main window
+            x = self.root.winfo_x() + 50
+            y = self.root.winfo_y() + 50
+            details_window.window.geometry(f"+{x}+{y}")
+            
+            # Store process info in the window for future reference
+            details_window.window.process_info = process_info
+            
+        except psutil.NoSuchProcess:
+            messagebox.showerror("Error", f"Process {values[0]} no longer exists.")
+            self.refresh_processes()  # Refresh the process list
+        except psutil.AccessDenied:
+            messagebox.showerror("Error", 
+                f"Access denied to process {values[0]}. Try running the application with administrator privileges.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open process details: {str(e)}")
+
+    def create_process(self):
+        """Create a new process"""
+        command = simpledialog.askstring("Create Process", 
+            "Enter the command to run:\n(e.g., 'notepad.exe' or 'python script.py')")
+        
+        if command:
+            try:
+                subprocess.Popen(command, shell=True)
+                time.sleep(1)  # Give the process time to start
+                self.refresh_processes()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to create process: {str(e)}")
+
+    def end_process_tree(self):
+        """Terminate the selected process and all its children"""
         selected_item = self.tree.selection()
         if not selected_item:
             return
         
-        try:
-            values = self.tree.item(selected_item[0])['values']
-            pid = int(values[0])  # PID should be the first column
-            
-            # Get process info directly here
-            process = psutil.Process(pid)
-            
-            # Add small delay to ensure CPU percent is calculated
-            process.cpu_percent()
-            time.sleep(0.1)  # Small delay for CPU measurement
-            
+        pid = int(self.tree.item(selected_item)['values'][0])
+        
+        if messagebox.askyesno("Confirm", 
+            "Are you sure you want to terminate this process and all its child processes?"):
             try:
-                path = process.exe()
-            except (psutil.AccessDenied, psutil.ZombieProcess):
-                path = "Access Denied"
-            
-            try:
-                cmdline = ' '.join(process.cmdline())
-            except (psutil.AccessDenied, psutil.ZombieProcess):
-                cmdline = "Access Denied"
-            
-            process_info = {
-                'pid': pid,
-                'name': process.name(),
-                'cpu_percent': process.cpu_percent(),
-                'memory_percent': process.memory_percent(),
-                'status': process.status(),
-                'num_threads': process.num_threads(),
-                'username': process.username(),
-                'priority': process.nice(),
-                'path': path,
-                'cmdline': cmdline,
-                'start_time': datetime.fromtimestamp(process.create_time()).strftime('%Y-%m-%d %H:%M:%S')
-            }
-            
-            print("Debug - Process Info:", process_info)
-            
-            # Create dialog in the main thread
-            self.root.after(0, lambda: ProcessDetailsDialog(self.root, process_info))
-            
-        except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
-            messagebox.showerror("Error", f"Cannot access process details: {str(e)}")
-        except Exception as e:
-            messagebox.showerror("Error", f"An error occurred: {str(e)}")
+                process = psutil.Process(pid)
+                children = process.children(recursive=True)
+                
+                # First terminate children
+                for child in children:
+                    try:
+                        child.terminate()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+                
+                # Then terminate parent
+                process.terminate()
+                
+                # Wait for processes to terminate
+                gone, alive = psutil.wait_procs(children + [process], timeout=3)
+                
+                # Force kill any remaining processes
+                for p in alive:
+                    try:
+                        p.kill()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+                
+                self.refresh_processes()
+                
+            except psutil.NoSuchProcess:
+                pass
+            except psutil.AccessDenied:
+                messagebox.showerror("Error", 
+                    "Access denied. Cannot terminate some processes.")
+            except Exception as e:
+                messagebox.showerror("Error", f"Error terminating process tree: {str(e)}")
+
+
 
     def create_status_bar(self):
         self.status_bar = ttk.Label(self.main_frame, text="Ready", anchor=tk.W)
@@ -424,45 +823,101 @@ class ProcessManager:
             self.sort_column = column
         
         self.refresh_processes()
+
+    def insert_process(self, process, parent=''):
+        """Insert a process into the treeview"""
+        values = []
+        for column in self.visible_columns:
+            if column == 'PID':
+                values.append(process['pid'])
+            elif column == 'Name':
+                values.append(process['name'])
+            elif column == 'CPU %':
+                values.append(f"{process['cpu_percent']:.1f}")
+            elif column == 'Memory %':
+                values.append(f"{process['memory_percent']:.1f}")
+            elif column == 'Status':
+                values.append(process['status'])
+            elif column == 'Threads':
+                values.append(process['num_threads'])
+            elif column == 'User':
+                values.append(process['username'])
+            elif column == 'Priority':
+                values.append(process['priority'])
+            elif column == 'Path':
+                values.append(process['path'])
+            elif column == 'Command Line':
+                values.append(process['cmdline'])
+            elif column == 'Start Time':
+                values.append(process['start_time'])
+        
+        return self.tree.insert(parent, 'end', values=values)
     
-    def group_processes(self, group_by):
-        if group_by is None:
-            self.current_grouping = None
-            self.refresh_processes()
-            return
+    # def group_processes(self, group_by):
+    #     """Group processes based on specified criteria"""
+    #     if group_by is None:
+    #         self.refresh_processes()
+    #         return
         
-        processes = self.get_processes()
-        groups = defaultdict(list)
+    #     processes = self.get_processes()
+    #     groups = defaultdict(list)
         
-        for proc in processes:
-            if group_by == 'type':
-                key = self.get_application_type(proc)
-            elif group_by == 'user':
-                key = proc.get('username', 'Unknown')
-            elif group_by == 'priority':
-                key = self.get_priority_group(proc)
-            elif group_by == 'resource':
-                key = self.get_resource_group(proc)
-            else:
-                key = 'Unknown'
+    #     # Clear existing items
+    #     self.tree.delete(*self.tree.get_children())
+        
+    #     # Group processes
+    #     for proc in processes:
+    #         if group_by == 'type':
+    #             key = self.get_application_type(proc)
+    #         elif group_by == 'user':
+    #             key = proc.get('username', 'Unknown')
+    #         elif group_by == 'priority':
+    #             key = self.get_priority_group(proc)
+    #         elif group_by == 'resource':
+    #             key = self.get_resource_group(proc)
+    #         else:
+    #             key = 'Unknown'
             
-            groups[key].append(proc)
+    #         groups[key].append(proc)
         
-        self.tree.delete(*self.tree.get_children())
+    #     # Insert grouped processes
+    #     for group_name, group_processes in sorted(groups.items()):
+    #         # Create group header with summary information
+    #         process_count = len(group_processes)
+    #         total_cpu = sum(p['cpu_percent'] for p in group_processes)
+    #         total_memory = sum(p['memory_percent'] for p in group_processes)
+            
+    #         group_values = [
+    #             '',  # PID
+    #             f"{group_name} ({process_count} processes)",  # Name
+    #             f"{total_cpu:.1f}",  # CPU %
+    #             f"{total_memory:.1f}",  # Memory %
+    #             '',  # Status
+    #             '',  # Threads
+    #         ]
+            
+    #         # Add empty values for any additional columns
+    #         group_values.extend([''] * (len(self.visible_columns) - len(group_values)))
+            
+    #         # Insert group header
+    #         group_id = self.tree.insert('', 'end', values=group_values, tags=('group',))
+            
+    #         # Insert processes in the group
+    #         for proc in sorted(group_processes, key=lambda x: x['cpu_percent'], reverse=True):
+    #             self.insert_process(proc, parent=group_id)
         
-        for group_name, group_processes in groups.items():
-            group_id = self.tree.insert('', 'end', text=group_name, values=(group_name, '', '', '', '', ''))
-            for proc in group_processes:
-                self.insert_process(proc, parent=group_id)
-    
-    def get_application_type(self, proc):
-        # Implement application type detection logic
-        if proc['name'].endswith('.exe'):
-            return 'Application'
-        elif 'python' in proc['name'].lower():
-            return 'Python Process'
-        else:
-            return 'System Process'
+    #     # Configure group header style
+    #     style = ttk.Style()
+    #     style.configure('Treeview', rowheight=25)
+    #     self.tree.tag_configure('group', font=('TkDefaultFont', 9, 'bold'))
+    # def get_application_type(self, proc):
+    #     # Implement application type detection logic
+    #     if proc['name'].endswith('.exe'):
+    #         return 'Application'
+    #     elif 'python' in proc['name'].lower():
+    #         return 'Python Process'
+    #     else:
+    #         return 'System Process'
     
     def get_priority_group(self, proc):
         try:
